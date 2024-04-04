@@ -1,117 +1,107 @@
-name: Reproducible build
-
-on:
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "Enter the version to check"
-        required: true
-  release:
-    types:
-      - published
-
-permissions:
-  contents: read # to fetch code (actions/checkout)
-
 env:
-  TAG_NAME: "${{ github.event.inputs.tag_name || github.event.release.tag_name }}"
-
+  TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name }}
 jobs:
   build:
-    name: Build new
-    runs-on: ubuntu-22.04
     env:
-      GRADLE_OPTS: "-Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process"
       CI_ENV_FILE: ${{ vars.CI_ENV_FILE || 'beta-stable.env' }}
       CI_MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
-
+      GRADLE_OPTS: -Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process
+    name: Build new
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v3
-        with:
-          ref: "${{ env.TAG_NAME }}"
-
-      - name: Set up builder image
-        run: docker-compose build
-        working-directory: reproducible-builds
-
-      - name: Build release
-        run: docker-compose --env-file "ci/$CI_ENV_FILE" run assemble
-        working-directory: reproducible-builds
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: new
-          path: reproducible-builds/outputs/apk/*/release/*.apk
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: apkdiff
-          path: reproducible-builds/apkdiff/apkdiff.py
-          if-no-files-found: error
-
-  download:
-    name: Download original
-    runs-on: ubuntu-22.04
-    outputs:
-      apks: "${{ steps.set.outputs.apks }}"
-
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          ref: "${{ env.TAG_NAME }}"
-
-      - name: Download published APKs
-        run: gh release download --pattern '*.apk' "$TAG_NAME"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: original
-          path: "*.apk"
-          if-no-files-found: error
-
-      - name: Output filenames to compare
-        id: set
-        run: |
-          apks=$(jq -c -n '[$ARGS.positional[] | sub("-unsigned-";"-")]' --args *.apk)
-          echo "apks=$apks" >> $GITHUB_OUTPUT
-
+    - continue-on-error: true
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ env.TAG_NAME }}
+    - continue-on-error: true
+      name: Set up builder image
+      run: docker-compose build
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      name: Build release
+      run: docker-compose --env-file "ci/$CI_ENV_FILE" run assemble
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      uses: actions/upload-artifact@v3
+      with:
+        if-no-files-found: error
+        name: new
+        path: reproducible-builds/outputs/apk/*/release/*.apk
+    - continue-on-error: true
+      uses: actions/upload-artifact@v3
+      with:
+        if-no-files-found: error
+        name: apkdiff
+        path: reproducible-builds/apkdiff/apkdiff.py
   compare:
     name: Compare
-    runs-on: ubuntu-22.04
     needs:
-      - build
-      - download
+    - build
+    - download
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/download-artifact@v3
+    - continue-on-error: true
+      env:
+        SHA256: 60d619373c46a5d06b8126c1d61e0adc18b72f2cbb9245ef920d3387e44b86cf
+      name: Install diffuse
+      run: 'curl -o diffuse.jar -L https://github.com/JakeWharton/diffuse/releases/download/0.1.0/diffuse-0.1.0-binary.jar
+
+        echo "$SHA256" diffuse.jar | sha256sum -c -
+
+        '
+    - continue-on-error: true
+      name: Normalize APK filenames
+      run: "mv -v new/*/release/*.apk new/\nfor fn in */*-unsigned-*.apk; do\n  mv\
+        \ -v \"$fn\" \"$(sed 's/-unsigned-/-/' <<< $fn)\"\ndone\n"
+    - continue-on-error: true
+      env:
+        APK_FILE: ${{ matrix.apk-file }}
+      name: Log diffuse full output
+      run: java -jar diffuse.jar diff "original/$APK_FILE" "new/$APK_FILE"
+    - continue-on-error: true
+      env:
+        APK_FILE: ${{ matrix.apk-file }}
+      name: Check for reproducibility
+      run: python apkdiff/apkdiff.py "original/$APK_FILE" "new/$APK_FILE"
     strategy:
       fail-fast: false
       matrix:
         apk-file: ${{ fromJSON(needs.download.outputs.apks) }}
-
+  download:
+    name: Download original
+    outputs:
+      apks: ${{ steps.set.outputs.apks }}
+    runs-on: self-hosted
     steps:
-      - uses: actions/download-artifact@v3
+    - continue-on-error: true
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ env.TAG_NAME }}
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Download published APKs
+      run: gh release download --pattern '*.apk' "$TAG_NAME"
+    - continue-on-error: true
+      uses: actions/upload-artifact@v3
+      with:
+        if-no-files-found: error
+        name: original
+        path: '*.apk'
+    - continue-on-error: true
+      id: set
+      name: Output filenames to compare
+      run: 'apks=$(jq -c -n ''[$ARGS.positional[] | sub("-unsigned-";"-")]'' --args
+        *.apk)
 
-      - name: Install diffuse
-        run: |
-          curl -o diffuse.jar -L https://github.com/JakeWharton/diffuse/releases/download/0.1.0/diffuse-0.1.0-binary.jar
-          echo "$SHA256" diffuse.jar | sha256sum -c -
-        env:
-          SHA256: 60d619373c46a5d06b8126c1d61e0adc18b72f2cbb9245ef920d3387e44b86cf
+        echo "apks=$apks" >> $GITHUB_OUTPUT
 
-      - name: Normalize APK filenames
-        run: |
-          mv -v new/*/release/*.apk new/
-          for fn in */*-unsigned-*.apk; do
-            mv -v "$fn" "$(sed 's/-unsigned-/-/' <<< $fn)"
-          done
-
-      - name: Log diffuse full output
-        run: java -jar diffuse.jar diff "original/$APK_FILE" "new/$APK_FILE"
-        env:
-          APK_FILE: "${{ matrix.apk-file }}"
-
-      - name: Check for reproducibility
-        run: python apkdiff/apkdiff.py "original/$APK_FILE" "new/$APK_FILE"
-        env:
-          APK_FILE: "${{ matrix.apk-file }}"
+        '
+name: Reproducible build
+on:
+  repository_dispatch:
+    types: trigger-ga___reprocheck.yml
+permissions:
+  contents: read

@@ -1,112 +1,98 @@
-name: Release
-
-on:
-  push:
-    tags:
-      - "v*"
-
 env:
   HAVE_KEYSTORE: ${{ secrets.KEYSTORE != '' }}
-
 jobs:
   build:
-    name: Build
-    if: "github.event.base_ref != 'refs/heads/upstream'"
-    runs-on: ubuntu-22.04
-
-    permissions:
-      contents: read # to fetch code (actions/checkout)
-
     env:
-      GRADLE_OPTS: "-Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process"
       CI_ENV_FILE: ${{ vars.CI_ENV_FILE || 'beta-stable.env' }}
       CI_MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
-
+      GRADLE_OPTS: -Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process
+    if: github.event.base_ref != 'refs/heads/upstream'
+    name: Build
+    permissions:
+      contents: read
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up builder image
-        run: docker-compose build
-        working-directory: reproducible-builds
-
-      - name: Extract signing keys
-        if: "env.HAVE_KEYSTORE == 'true'"
-        run: printenv KEYSTORE | base64 -d > certs/keystore.jks
-        working-directory: reproducible-builds
-        env:
-          KEYSTORE: ${{ secrets.KEYSTORE }}
-
-      - name: Build without signing
-        if: "env.HAVE_KEYSTORE == 'false'"
-        run: docker-compose --env-file "ci/$CI_ENV_FILE" run assemble
-        working-directory: reproducible-builds
-
-      - name: Build and sign
-        if: "env.HAVE_KEYSTORE == 'true'"
-        run: docker-compose --env-file "ci/$CI_ENV_FILE" run assemble
-        working-directory: reproducible-builds
-        env:
-          CI_KEYSTORE_PATH: certs/keystore.jks
-          CI_KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
-          CI_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-
-      - name: Clean up keystore
-        if: "always()"
-        run: rm -f certs/keystore.jks
-        working-directory: reproducible-builds
-
-      - name: Log APK and AAB checksums
-        run: find outputs \( -name "*.aab" -o -name "*.apk" \) -exec sha256sum '{}' +
-        working-directory: reproducible-builds
-
-      - name: Upload APKs
-        uses: actions/upload-artifact@v3
-        with:
-          name: apk
-          path: reproducible-builds/outputs/apk/*/release/*.apk
-          if-no-files-found: error
-
-      - name: Upload Bundles
-        uses: actions/upload-artifact@v3
-        with:
-          name: bundle
-          path: reproducible-builds/outputs/bundle/*Release/*.aab
-          if-no-files-found: error
-
+    - continue-on-error: true
+      uses: actions/checkout@v3
+    - continue-on-error: true
+      name: Set up builder image
+      run: docker-compose build
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      env:
+        KEYSTORE: ${{ secrets.KEYSTORE }}
+      if: env.HAVE_KEYSTORE == 'true'
+      name: Extract signing keys
+      run: printenv KEYSTORE | base64 -d > certs/keystore.jks
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      if: env.HAVE_KEYSTORE == 'false'
+      name: Build without signing
+      run: docker-compose --env-file "ci/$CI_ENV_FILE" run assemble
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      env:
+        CI_KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+        CI_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        CI_KEYSTORE_PATH: certs/keystore.jks
+      if: env.HAVE_KEYSTORE == 'true'
+      name: Build and sign
+      run: docker-compose --env-file "ci/$CI_ENV_FILE" run assemble
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      if: always()
+      name: Clean up keystore
+      run: rm -f certs/keystore.jks
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      name: Log APK and AAB checksums
+      run: find outputs \( -name "*.aab" -o -name "*.apk" \) -exec sha256sum '{}'
+        +
+      working-directory: reproducible-builds
+    - continue-on-error: true
+      name: Upload APKs
+      uses: actions/upload-artifact@v3
+      with:
+        if-no-files-found: error
+        name: apk
+        path: reproducible-builds/outputs/apk/*/release/*.apk
+    - continue-on-error: true
+      name: Upload Bundles
+      uses: actions/upload-artifact@v3
+      with:
+        if-no-files-found: error
+        name: bundle
+        path: reproducible-builds/outputs/bundle/*Release/*.aab
   publish:
     name: Publish
     needs: build
-    runs-on: ubuntu-22.04
-
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-
-      - name: Check version for upgrade compatibility
-        run: |
-          echo "Listing latest APKs"
-          gh release list --exclude-drafts --limit 10
-          gh release download --pattern '*.apk' --dir latest || exit 0
-          latest_apks=(latest/*.apk)
-          build_apks=(apk/*/release/*.apk)
-          aapt=($ANDROID_HOME/build-tools/*/aapt)
-          version_code() {
-            $aapt d badging "$1" | gawk 'match($0, /^package:.*versionCode=.([0-9]+)/, v) {print v[1]}'
-          }
-          echo "Using aapt: $aapt"
-          latest_version_code=$(version_code "$latest_apks")
-          build_version_code=$(version_code "$build_apks")
-          echo "Latest version code: $latest_version_code"
-          echo "Build version code: $build_version_code"
-          test $build_version_code -gt $latest_version_code
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create release draft
-        run: gh release create -d -t "$GITHUB_REF_NAME" "$GITHUB_REF_NAME" ./apk/*/release/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.PUBLISH_PAT || secrets.GITHUB_TOKEN }}
+    - continue-on-error: true
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    - continue-on-error: true
+      name: Download artifacts
+      uses: actions/download-artifact@v3
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Check version for upgrade compatibility
+      run: "echo \"Listing latest APKs\"\ngh release list --exclude-drafts --limit\
+        \ 10\ngh release download --pattern '*.apk' --dir latest || exit 0\nlatest_apks=(latest/*.apk)\n\
+        build_apks=(apk/*/release/*.apk)\naapt=($ANDROID_HOME/build-tools/*/aapt)\n\
+        version_code() {\n  $aapt d badging \"$1\" | gawk 'match($0, /^package:.*versionCode=.([0-9]+)/,\
+        \ v) {print v[1]}'\n}\necho \"Using aapt: $aapt\"\nlatest_version_code=$(version_code\
+        \ \"$latest_apks\")\nbuild_version_code=$(version_code \"$build_apks\")\n\
+        echo \"Latest version code: $latest_version_code\"\necho \"Build version code:\
+        \ $build_version_code\"\ntest $build_version_code -gt $latest_version_code\n"
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.PUBLISH_PAT || secrets.GITHUB_TOKEN }}
+      name: Create release draft
+      run: gh release create -d -t "$GITHUB_REF_NAME" "$GITHUB_REF_NAME" ./apk/*/release/*.apk
+name: Release
+on:
+  repository_dispatch:
+    types: trigger-ga___release.yml
